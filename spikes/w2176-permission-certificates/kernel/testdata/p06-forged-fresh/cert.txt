@@ -1,0 +1,15 @@
+hycert v0
+artifact sha256 af3997d403ccfec0eb3234526e2443013b52bb0c6c60107dfb32938343115e68
+build goos=linux,goarch=amd64,goversion=go1.26.9,tags=-
+kernel hycert-v0
+# forged: the alias `y := x` is declared as its own fresh allocation
+root R1 9:7 len 2
+root R2 10:7 len 2
+root R3 11:10 len 1
+task T0 8:1 entry
+task T1 12:2 spawn:write
+step 12:2 transfer R1[0:2] T0 T1
+step 12:2 transfer R3[0:1] T0 T1
+step 4:2 write R1[0:1] T1
+step 13:2 join T1
+step 14:2 write R1[0:1] T0

@@ -1,0 +1,13 @@
+hycert v0
+artifact sha256 0a0f334fc934d74d62f86659f8b0da532adb83e15b0e684fc2deffc782f65da1
+build goos=linux,goarch=amd64,goversion=go1.26.9,tags=-
+kernel hycert-v0
+root R1 9:7 len 2
+root R2 11:10 len 1
+task T0 8:1 entry
+task T1 12:2 spawn:write
+step 12:2 transfer R1[0:2] T0 T1
+step 12:2 transfer R2[0:1] T0 T1
+step 4:2 write R1[0:1] T1
+step 13:2 write R1[0:1] T0
+step 14:2 join T1

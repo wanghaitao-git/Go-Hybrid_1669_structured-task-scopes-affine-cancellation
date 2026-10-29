@@ -1,0 +1,5 @@
+hycert v0
+artifact sha256 81c7626cb8c46e86c4b2b69e6eae9d5352df41d522a06b211fde03bf5635ec9b
+build goos=linux,goarch=amd64,goversion=go1.26.9,tags=-
+kernel hycert-v0
+# artifact is outside the certified subset: *ast.ForStmt is outside the certified subset

@@ -1,0 +1,5 @@
+hycert v0
+artifact sha256 2d8bdea428adece2a5077f75e84b0f611790621a80d3c464971857334c75f7ee
+build goos=linux,goarch=amd64,goversion=go1.26.9,tags=-
+kernel hycert-v0
+# artifact is outside the certified subset: package-level var/type declarations are outside the certified subset

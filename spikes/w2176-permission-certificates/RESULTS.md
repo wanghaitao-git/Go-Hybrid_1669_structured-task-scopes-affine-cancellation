@@ -143,8 +143,84 @@ a publishable negative outcome, which is the point of the track:
 
 ## 6. Raw results
 
-*(appended after execution; see §7 for the run log)*
+Executed 2026-10-29 on Windows 11 / Go 1.27.3 (`go test ./...` in `kernel/`,
+module `hycert`, no external dependencies).
+
+### 6.1 Falsifier battery — prediction vs. observed
+
+| # | Case (fixture) | Predicted | Observed | Reason line the kernel printed |
+|---|---|---|---|---|
+| P1 | `p01-accept` | ACCEPT | **ACCEPT** | `checked 9 events against 7 derivation steps` |
+| P2 | `p02-disjoint-accept` | ACCEPT | **ACCEPT** | `checked 14 events against 11 derivation steps` |
+| P3 | `p03-surviving-alias` | REJECT | **REJECT** | `13:2: write R1[0:1] by T0 without permission on the overlapping storage` |
+| P4 | `p04-no-cert` | NO-CERT | **NO-CERT** | `no certificate supplied` |
+| P5 | `p05-overlap` | REJECT | **REJECT** | `13:2: transfer R1[2:4] from T0 to T2 without holding it` |
+| P6 | `p06-forged-fresh` | REJECT | **REJECT** | `root inventory contradicts the artifact: certificate declares 3, artifact has 2 allocation sites` |
+| P7 | `p07-omitted-op` | REJECT | **REJECT** | `uncovered memory operation (1 left): T0 10:2 write R1[0:1]` |
+| P8 | `p08-fabricated-step` | REJECT | **REJECT** | `10:3: write step names a place or task with no such operation in the artifact` |
+| P9 | `p09-live-element-write` | REJECT | **REJECT** | `12:2: write R1[0:1] by T0 without permission on the overlapping storage` |
+| P10 | `p10-loop-no-cert` | NO-CERT | **NO-CERT** | `artifact is outside the certified subset: *ast.ForStmt …` |
+| P11 | `p11-changed-artifact` | NO-CERT | **NO-CERT** | `artifact digest mismatch: certificate binds 911599b0ba89…, artifact is a9645377e01a…` |
+| P12 | `p12-missing-join` | NO-CERT | **NO-CERT** | `derivation is incomplete: 1 join assertion(s) missing` |
+| P13 | `p13-wrong-but-safe` | ACCEPT | **ACCEPT** | `checked 8 events against 6 derivation steps` |
+| P14 | `p14-unsupported-racy` | NO-CERT | **NO-CERT** | `artifact is outside the certified subset: package-level var/type declarations …` |
+| P15 | `p15-omitted-new-op` | REJECT | **REJECT** | `uncovered memory operation (1 left): T0 14:19 write R1[0:1]` |
+
+15/15 match the pre-registered outcome, including the two deliberate
+"must still pass" rows (P2, P13).
+
+Two notes on what these rows do **not** show:
+
+- P6's rejection is the inventory check firing, not a replay check: the
+  producer declared three allocations where the artifact has two. A sharper
+  forgery — keeping the count right and mislabelling an alias — is not
+  expressible, because the certificate carries no alias claims at all;
+  aliasing is recomputed from the text, so the only place to lie is a
+  *step's* place, and `TestCertificateIsCheckedAgainstText` covers that
+  (a transfer naming root `R9` in a two-root artifact is rejected).
+- P4 is the honest baseline: the artifact in `p03` is exactly what the emit
+  path produces today, and it earns no certificate. That is the gap the
+  proposal is about, not a defect in the kernel.
+
+### 6.2 Kernel prediction results
+
+| # | Prediction | Observed |
+|---|---|---|
+| K1 | ≤2,000 semantic LOC | **1,398** non-blank non-comment lines across `main.go` (65), `internal/cert/cert.go` (227), `internal/artifact/artifact.go` (743), `internal/kernel/kernel.go` (321), `internal/kernel/dump.go` (42). Tests (200 lines) and `testdata/` excluded. |
+| K2 | Linear replay, no search | Holds structurally and is exercised by `TestScaling`: events/steps grow 1:1 with operations (50→50, 100→100, 200→200, 400→400, 800→800 steps) and every size verifies in well under a millisecond (measurement resolution on this box is ~0.5 ms, so the timings are a datapoint, not a benchmark). The replay is one forward pass over the event list plus a map lookup per step; no fixpoint, no backtracking, no solver. |
+| K3 | No rule consults a producer label | Holds. The kernel's only inputs are the Go source and the certificate; roots, intervals, aliasing, task creation and every memory operation are recomputed. A certificate contributes *decisions* (which task holds which place when) and a *binding* (digest, build claim), never a verdict. |
+| K4 | Kernel source remains trusted | Holds and cannot be discharged by a prototype. §7 of the README lists what a bug in this kernel would let through. |
+
+### 6.3 Thesis falsifiers F1–F5
+
+| # | Falsifier | Outcome |
+|---|---|---|
+| F1 | Positive cases cannot be certified | **Did not fire** for the admitted subset: two independent positive shapes (unique transfer; disjoint split across two tasks) are certified. It *would* fire immediately for anything with a loop, and the subset is small on purpose — see the limits list. |
+| F2 | An unsafe variant passes | **Did not fire**: 9 of 9 unsafe/forged variants were rejected or refused a certificate. |
+| F3 | Permissions still depend on a trusted `hy-check` label | **Did not fire**: the kernel has no hy-check input at all; the certificate format cannot express "sendable" or "fresh". |
+| F4 | The kernel re-implements the existing search | **Did not fire**, but only because loops are excluded (DAG). The moment loops are admitted, a fixpoint comes back; this is the real boundary of the result and is stated in the README. |
+| F5 | The kernel blows the LOC budget | **Did not fire**: 1,398 vs the 2,000 budget, with Go's parser and type checker doing the front-end work (those are exactly the dependencies the issue says to list separately). |
 
 ## 7. Run log
 
-*(appended after execution)*
+```
+2026-10-29  git clone (proxy 127.0.0.1:7890; direct github access is reset from this host)
+2026-10-29  commit 1: RESULTS.md pre-registration (before any kernel code)
+2026-10-29  implemented kernel/: cert parser, artifact model, replay, CLI, dump
+2026-10-29  go build ./...            OK
+2026-10-29  go vet ./...              OK
+2026-10-29  gofmt -l .                 clean except testdata/p15 (unformatted on purpose: the
+                                      semicolon-joined second write is what P15 exercises)
+2026-10-29  go test ./...             ok hycert/internal/kernel  (battery + scaling)
+2026-10-29  hycert -src … -cert …     P1..P15 as tabulated in §6.1
+```
+
+Reproduce:
+
+```bash
+cd spikes/w2176-permission-certificates/kernel
+go test ./... -v
+go run . -src testdata/p03-surviving-alias/artifact.go -cert testdata/p03-surviving-alias/cert.txt
+go run . -src testdata/p13-wrong-but-safe/artifact.go -dump   # producer helper
+```
+
