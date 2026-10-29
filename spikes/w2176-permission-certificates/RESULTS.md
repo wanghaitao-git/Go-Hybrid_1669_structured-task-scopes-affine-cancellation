@@ -1,0 +1,150 @@
+# RESULTS — W-2176 permission certificates for actual Go (pre-registration)
+
+**Status:** PRE-REGISTERED — this file was committed **before** the kernel
+existed and before any case in the battery was executed. Raw results are
+appended under "Raw results" only after a run, never edited in place.
+
+**Issue:** [#2176](https://github.com/limitlessprojects/Go-Hybrid/issues/2176)
+— make `hy-check` an untrusted proof producer for an opt-in certified
+subset: the frontend emits Go plus a candidate permission derivation, and
+an independent kernel checks that derivation against the **actual typed Go
+CFG**.
+
+**Inspected main:** `1f0ff978f4deff78c77bca96db0e3e46f32de71b`.
+
+---
+
+## 1. What is being tested (the question, not the implementation)
+
+The research question is **not** "can we write a checker". It is:
+
+> Can explicit proof checking remove *inference and search* from the
+> trusted safety core without the kernel becoming another full checker?
+
+So the scoreboard is not "does the prototype reject the bad programs". It
+is the pair:
+
+1. **Trust reduction:** does the accept/reject decision for the certified
+   artifact depend on any `hy-check` conclusion? (Target: no. The kernel
+   must recompute allocation identity, aliasing and every memory operation
+   from the Go text itself, and treat the certificate only as a *derivation
+   to be replayed*.)
+2. **Cost:** how many non-generated semantic lines does the kernel need,
+   compared with the checker it is meant to stop trusting?
+
+A prototype that only "rechecks what hy-check already decided" fails
+regardless of how many falsifiers it rejects. A prototype that is cheap
+only because it certifies three programs also fails — shrinking the
+language is not a trust reduction.
+
+## 2. Admitted subset (v0), fixed before implementation
+
+Certified artifacts are ordinary **Go** source, one package, one file
+`artifact.go`, restricted to:
+
+| Dimension | Admitted in v0 |
+|---|---|
+| Types | `int`, `string`, `bool`; `[]int`, `[]string`; `chan` of those |
+| Allocation | `make([]T, n)` / `make(chan T, n)` with statically known `n`, composite slice literals |
+| Aliasing | `y := x`, `y = x[:]`, `y := x[a:b]` with statically known bounds |
+| Control flow | sequential statements, `if`/`else`; **no loops** (see below) |
+| Concurrency | `go f(args)` spawn of a top-level `func`; unbuffered/known-capacity channel send and receive; `close(ch)`; single-shot done-channel join |
+| Calls | static calls to top-level `func`s in the same artifact, each carrying its own checked derivation |
+| Excluded → **no certificate** | loops, closures, `defer`/`panic`/`recover`, maps, structs, interfaces, pointers, methods, `unsafe`, reflection, globals, variadics, `select`, buffered channels with unbounded producers, borrowed mutable entry inputs |
+
+**Why no loops is a design decision, not a convenience.** Excluding loops
+makes the CFG over the admitted subset a **DAG**. On a DAG, replaying an
+explicit derivation is a single topological pass: no fixpoint, no widening,
+no invariant inference, no search. This is the strongest available answer
+to "does the kernel become another full checker" — it is the property that
+must hold, and it is what makes the 2,000-LOC budget plausible at all. A
+later milestone that adds loops would have to give up that property and is
+explicitly out of scope here.
+
+**Intervals.** A reference denotes the byte/element interval `[0, len)` of
+its backing root; element ops are `[i, i+1)`. Reference copies and
+re-slices keep the **backing-root identity** and narrow the interval. Only
+an allocation rule creates freshness. (`x[:1]` and `x` are the *same* root
+with different intervals — the entire point of the illustrative negative
+case.)
+
+## 3. Trust ledger (fixed before implementation)
+
+**Trusted even after a certificate is accepted:**
+
+| Component | Why it stays trusted | Reducible later? |
+|---|---|---|
+| Go parser (`go/parser`) | the kernel reads the artifact through it | shared with `cmd/compile`; not ours to shrink |
+| Go type resolution (`go/types`) | shapes, intervals, callee signatures | ditto |
+| Kernel implementation (`hycert`, this spike) | it *is* the checking core | target: ≤2,000 semantic LOC, no search, no SMT |
+| Go compiler + runtime | the artifact is compiled and scheduled by them | out of scope (GUARANTEES rows 17–20) |
+
+**No longer trusted for the certified artifact's race-freedom:**
+
+| Component | Today | With a certificate |
+|---|---|---|
+| `hy-check` sendability classification (row 1–3: spawn args, sends, deep composites) | trusted source of "sendable"/"moved"/"frozen" | **not trusted**: its output is a *hint*; the kernel recomputes roots and aliases and rejects forged labels |
+| `hy-check` move/freeze bookkeeping (`freeze.rs`, `loans.rs`) | trusted | **not trusted** for the certified artifact: ownership is a permission in the derivation, checked against real spawn/send edges |
+| `hy-emit` move erasure (`stmt.rs:39–69`) | the reason no evidence exists in the artifact | unchanged — the certificate, not the emitted text, carries the evidence |
+
+`go.mod` of the kernel carries **no third-party dependency** and no
+SMT solver. Any dependency added later counts against the trust reduction
+and must be argued in the ledger above.
+
+## 4. Pre-registered predictions (committed before the run)
+
+Every row is a prediction, not a result. "REJECT" and "NO-CERT" are the
+kernel's two distinct failure classes: **REJECT** = a derivation was
+supplied and the kernel proved it wrong (the interesting class);
+**NO-CERT** = the artifact is outside the subset, or the derivation or its
+binding is absent/ill-formed.
+
+| # | Case | Supplied certificate | Pre-registered outcome |
+|---|---|---|---|
+| P1 | Supported spawn with real reads/writes, storage uniquely transferred to the child, joined once | complete, honest | **ACCEPT** |
+| P2 | Disjoint split: `go w(x[:2])`, `go w(x[2:4])` on one `make([]int,4)` | complete, honest | **ACCEPT** |
+| P3 | Illustrative case from the issue: `x := make([]int,2); alias := x[:1]; go write(x); alias[0] = 1` | forged: claims `alias` stays writable by the parent after the spawn | **REJECT** (surviving-alias write after transfer) |
+| P4 | Same artifact as P3 | *no* certificate at all | **NO-CERT** (this is the today's-emitted-Go baseline) |
+| P5 | Overlapping concurrent writes: `go w(x[:3])`, `go w(x[2:4])` | complete, honest | **REJECT** (overlapping exclusive permissions) |
+| P6 | Forged freshness: `y := x; go w(y)` with a certificate that calls `y` a fresh root | forged labels | **REJECT** (kernel recomputes backing root; label contradicts syntax) |
+| P7 | Omitted obligation: a real element write in the artifact with no step covering it | incomplete-by-omission | **REJECT** (uncovered memory operation) |
+| P8 | Fabricated step: certificate cites a line/column with no memory operation | forged | **REJECT** |
+| P9 | Type-correct unsafe mutation: `alias[0] = 1` after the root was transferred, where `alias` is an element re-slice | forged: asserts exclusive parent permission | **REJECT** |
+| P10 | Unsupported construct in the artifact (a `for` loop) | complete, honest | **NO-CERT** |
+| P11 | Changed artifact: certificate digest taken from a different file | any | **NO-CERT** (binding) |
+| P12 | Incomplete derivation: complete steps, missing `join` assertion | honest but incomplete | **NO-CERT** |
+| P13 | Race-free but functionally wrong artifact (child computes the wrong value; no data race) | complete, honest | **ACCEPT** — safety pass, and the artifact must still be **caught by the separate behaviour gate**, which this kernel does not implement |
+| P14 | Program outside the subset that is genuinely racy, supplied with a certificate | any | **NO-CERT** (not ACCEPT — an unsupported construct must never read as safe) |
+| P15 | Same admitted program as P1, but with the artifact's `move`-equivalent spawn arg swapped to a surviving alias and the certificate *unchanged* | stale | **REJECT** or **NO-CERT**, never ACCEPT |
+
+**Predictions about the kernel itself:**
+
+| # | Prediction |
+|---|---|
+| K1 | Kernel semantic core (parser of the certificate format + artifact model + replay rules) is **≤2,000** non-blank, non-comment lines, excluding tests and `testdata/`. |
+| K2 | The replay is **linear in the number of steps and nodes**: one topological pass over a DAG, no fixpoint, no backtracking, no solver call. Verification is O(nodes + steps). |
+| K3 | No rule consults a `hy-check` verdict or any label supplied by the producer without recomputing it from the artifact. A certificate that is internally consistent but contradicts the Go text is rejected on the text. |
+| K4 | The kernel's own source remains a trust assumption: accepting a certificate says nothing about kernel bugs. This spike demonstrates *feasibility and cost*, not soundness of the kernel. |
+
+## 5. What would falsify the thesis
+
+Taken from the issue, made concrete for this spike. Any of these firing is
+a publishable negative outcome, which is the point of the track:
+
+- F1: A meaningful positive case cannot be certified → the subset that
+  survives is too small to matter.
+- F2: An unsafe variant passes → the kernel is not a safety argument.
+- F3: Permissions still depend on a trusted `hy-check` label → no trust
+  boundary was moved.
+- F4: The kernel re-implements the existing search (fixpoint, invariant
+  inference) → it became another full checker.
+- F5: The kernel exceeds the LOC budget by a wide margin → cost honesty
+  fails, and the writeup must say so.
+
+## 6. Raw results
+
+*(appended after execution; see §7 for the run log)*
+
+## 7. Run log
+
+*(appended after execution)*
