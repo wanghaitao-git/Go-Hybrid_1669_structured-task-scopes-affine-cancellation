@@ -160,7 +160,7 @@ module `hycert`, no external dependencies).
 | P8 | `p08-fabricated-step` | REJECT | **REJECT** | `10:3: write step names a place or task with no such operation in the artifact` |
 | P9 | `p09-live-element-write` | REJECT | **REJECT** | `12:2: write R1[0:1] by T0 without permission on the overlapping storage` |
 | P10 | `p10-loop-no-cert` | NO-CERT | **NO-CERT** | `artifact is outside the certified subset: *ast.ForStmt …` |
-| P11 | `p11-changed-artifact` | NO-CERT | **NO-CERT** | `artifact digest mismatch: certificate binds 911599b0ba89…, artifact is a9645377e01a…` |
+| P11 | `p11-changed-artifact` | NO-CERT | **NO-CERT** | `artifact digest mismatch: certificate binds 911599b0ba89…, artifact is 9cf13955f171…` † |
 | P12 | `p12-missing-join` | NO-CERT | **NO-CERT** | `derivation is incomplete: 1 join assertion(s) missing` |
 | P13 | `p13-wrong-but-safe` | ACCEPT | **ACCEPT** | `checked 8 events against 6 derivation steps` |
 | P14 | `p14-unsupported-racy` | NO-CERT | **NO-CERT** | `artifact is outside the certified subset: package-level var/type declarations …` |
@@ -168,6 +168,12 @@ module `hycert`, no external dependencies).
 
 15/15 match the pre-registered outcome, including the two deliberate
 "must still pass" rows (P2, P13).
+
+† The first run of P11 printed `a9645377e01a…`, a digest taken before the
+fixture's final line was settled. The committed artifact hashes
+`9cf13955f171…` and reproduces identically on Windows and Linux (§6.4).
+The prediction (NO-CERT, binding failure) never depended on the value; the
+row now records what a re-run of the committed tree prints.
 
 Two notes on what these rows do **not** show:
 
@@ -186,7 +192,7 @@ Two notes on what these rows do **not** show:
 
 | # | Prediction | Observed |
 |---|---|---|
-| K1 | ≤2,000 semantic LOC | **1,398** non-blank non-comment lines across `main.go` (65), `internal/cert/cert.go` (227), `internal/artifact/artifact.go` (743), `internal/kernel/kernel.go` (321), `internal/kernel/dump.go` (42). Tests (200 lines) and `testdata/` excluded. |
+| K1 | ≤2,000 semantic LOC | **1,398** non-blank non-comment lines across `main.go` (65), `internal/cert/cert.go` (227), `internal/artifact/artifact.go` (743), `internal/kernel/kernel.go` (321), `internal/kernel/dump.go` (42). Tests (176 lines across the two `_test.go` files) and `testdata/` excluded. |
 | K2 | Linear replay, no search | Holds structurally and is exercised by `TestScaling`: events/steps grow 1:1 with operations (50→50, 100→100, 200→200, 400→400, 800→800 steps) and every size verifies in well under a millisecond (measurement resolution on this box is ~0.5 ms, so the timings are a datapoint, not a benchmark). The replay is one forward pass over the event list plus a map lookup per step; no fixpoint, no backtracking, no solver. |
 | K3 | No rule consults a producer label | Holds. The kernel's only inputs are the Go source and the certificate; roots, intervals, aliasing, task creation and every memory operation are recomputed. A certificate contributes *decisions* (which task holds which place when) and a *binding* (digest, build claim), never a verdict. |
 | K4 | Kernel source remains trusted | Holds and cannot be discharged by a prototype. §7 of the README lists what a bug in this kernel would let through. |
@@ -201,6 +207,29 @@ Two notes on what these rows do **not** show:
 | F4 | The kernel re-implements the existing search | **Did not fire**, but only because loops are excluded (DAG). The moment loops are admitted, a fixpoint comes back; this is the real boundary of the result and is stated in the README. |
 | F5 | The kernel blows the LOC budget | **Did not fire**: 1,398 vs the 2,000 budget, with Go's parser and type checker doing the front-end work (those are exactly the dependencies the issue says to list separately). |
 
+### 6.4 Cross-platform check — Ubuntu 26.04, exact committed blobs
+
+Re-ran the whole suite on a Linux guest to make sure nothing in §6.1 is a
+Windows artifact:
+
+| | |
+|---|---|
+| Guest | Ubuntu 26.04.1 LTS (GNOME desktop, VirtualBox 7.2.22, 4 vCPU / 8 GB), Go 1.27.3 linux/amd64 from the official tarball |
+| Content transferred | the commit's blobs, extracted with `git cat-file blob`; `git archive` was **not** used because on a host with `core.autocrlf=true` it applies the smudge filter and ships CRLF — the first sync silently produced CRLF and `gofmt -l` flagged all 39 files |
+| Byte check | sha256 of all 39 files identical host vs. guest |
+| Build / vet | OK |
+| `go test ./...` | PASS — battery 15/15, `TestNoCertificateForUnsupported`, `TestCertificateIsCheckedAgainstText`, `TestScaling` |
+| `gofmt -l .` | only `testdata/p15-omitted-new-op/artifact.go`, the documented exception |
+| K1 | 1,398 semantic LOC (65 + 227 + 743 + 321 + 42), same as Windows |
+| K2 | events/steps 1:1 at n=50…800; wall 37.5 µs / 166 µs / 138 µs / 300 µs / 471 µs |
+| Offline | `GOPROXY=off` build and test both pass with an empty `GOCACHE`; zero modules in the module cache — the "no dependency" claim is enforced by the build, not just asserted |
+| CLI matrix | same 15 verdicts and the same exit codes (0/1/2) as §6.1 |
+
+Digests are stable across the two platforms (`p01` binds `911599b0…`,
+`p13` `06ace95c…`), which is what makes rule R1 portable: the binding is
+over CRLF-normalized text, not over raw file bytes. The only difference
+found was the stale P11 value marked † above.
+
 ## 7. Run log
 
 ```
@@ -213,6 +242,11 @@ Two notes on what these rows do **not** show:
                                       semicolon-joined second write is what P15 exercises)
 2026-10-29  go test ./...             ok hycert/internal/kernel  (battery + scaling)
 2026-10-29  hycert -src … -cert …     P1..P15 as tabulated in §6.1
+2026-10-29  Ubuntu 26.04 guest: go1.27.3 linux/amd64 from go.dev tarball (proxy)
+2026-10-29  Ubuntu 26.04 guest: exact-blob sync via git cat-file; sha256 equal for all 39 files
+2026-10-29  Ubuntu 26.04 guest: build/vet/test PASS; gofmt -l only testdata/p15;
+                                      K1 1,398; battery 15/15; §6.4
+2026-10-29  P11 digest corrected to the committed artifact's value (†)
 ```
 
 Reproduce:

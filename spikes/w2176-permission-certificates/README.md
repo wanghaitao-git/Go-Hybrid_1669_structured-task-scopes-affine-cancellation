@@ -148,6 +148,10 @@ step 14:9 read R1[0:1] T0
 - **K2 (no search)**: steps grow 1:1 with operations up to 800 ops, each
   verified in well under a millisecond.
 - **K3 (no producer labels)**: the kernel has no `hy-check` input.
+- **Cross-platform**: the same 15 verdicts, exit codes, LOC count and
+  digests reproduce on Ubuntu 26.04 / Go 1.27.3 linux/amd64, synced from
+  the commit's blobs rather than the Windows working tree; `GOPROXY=off`
+  builds and tests with zero modules (§6.4 of RESULTS).
 
 ## 7. Where this is weak — read this before believing any of it
 
